@@ -36,10 +36,6 @@ type Message = {
   kind?: "answer" | "system";
 };
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "http://127.0.0.1:8000";
-
 const seedQuestions = [
   "What are the first-line guideline-based treatments for uncomplicated cystitis in adults?",
   "Is amoxicillin recommended for uncomplicated cystitis?",
@@ -101,7 +97,7 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    void fetch(`${API_BASE}/api/sources`)
+    void fetch(`/api/sources`)
       .then((res) => res.json())
       .then((json: { groups?: SourceGroup[] }) => setGroups(json.groups ?? []))
       .catch(() => setStatus("Offline"));
@@ -165,7 +161,7 @@ export default function Page() {
     ]);
 
     try {
-      const response = await fetch(`${API_BASE}/api/ask`, {
+      const response = await fetch(`/api/ask`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ query: value }),

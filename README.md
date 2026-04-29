@@ -21,15 +21,17 @@ Separate FastAPI backend and Next.js frontend for a medical search assistant bac
 - Frontend: Next.js app in `frontend/`
 - LLM: NVIDIA `https://integrate.api.nvidia.com/v1`
 - No sign-in screen, user database, or audit log flow
+- The frontend proxies `/api/*` calls server-side so the browser never talks to `127.0.0.1`.
 
 ## Flow
 
 ```mermaid
 flowchart TD
     U[Doctor / user in browser] --> F[Next.js frontend<br/>frontend/]
-    F -->|GET /api/sources| B[FastAPI backend<br/>app.py]
-    F -->|POST /api/ask| B
-    F -->|GET /api/test-llm| B
+    F -->|GET /api/sources| P[Next.js API proxy routes]
+    F -->|POST /api/ask| P
+    F -->|GET /api/test-llm| P
+    P --> B[FastAPI backend<br/>app.py]
     B --> A[TrustedMedicalAgent<br/>agent.py]
     A --> R[Route query to trusted source group]
     R --> S[Search trusted medical sources]
@@ -41,7 +43,8 @@ flowchart TD
 
 Request path:
 - The browser loads the Next.js UI.
-- The UI calls the FastAPI backend for sources and answers.
+- The UI calls the Next.js API proxy routes on the same frontend domain.
+- The proxy routes forward requests to the FastAPI backend.
 - The backend routes the query through the trusted-source agent.
 - The agent gathers evidence and sends only supported context to NVIDIA.
 - The final response returns with source links for each answer.
@@ -98,6 +101,7 @@ npm run dev
 Open `http://127.0.0.1:3000`.
 
 If the frontend should point at a different backend URL, set `NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local`.
+The deployed frontend reads that same variable on the server side for proxying, but the browser only sees `/api/*` routes.
 
 ## Cloud build flow
 
