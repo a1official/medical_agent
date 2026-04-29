@@ -1,0 +1,53 @@
+name: Deploy to Railway
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify Railway secrets
+        id: railway_secrets
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_BACKEND_SERVICE_ID: ${{ secrets.RAILWAY_BACKEND_SERVICE_ID }}
+          RAILWAY_FRONTEND_SERVICE_ID: ${{ secrets.RAILWAY_FRONTEND_SERVICE_ID }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ] || [ -z "$RAILWAY_PROJECT_ID" ] || [ -z "$RAILWAY_BACKEND_SERVICE_ID" ] || [ -z "$RAILWAY_FRONTEND_SERVICE_ID" ]; then
+            echo "Railway deployment secrets are not fully configured yet."
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy backend service
+        if: steps.railway_secrets.outputs.should_deploy == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_BACKEND_SERVICE_ID: ${{ secrets.RAILWAY_BACKEND_SERVICE_ID }}
+          RAILWAY_ENVIRONMENT: ${{ secrets.RAILWAY_ENVIRONMENT }}
+        run: npx railway@latest up . --ci --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_BACKEND_SERVICE_ID" --environment "${RAILWAY_ENVIRONMENT:-production}"
+
+      - name: Deploy frontend service
+        if: steps.railway_secrets.outputs.should_deploy == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_FRONTEND_SERVICE_ID: ${{ secrets.RAILWAY_FRONTEND_SERVICE_ID }}
+          RAILWAY_ENVIRONMENT: ${{ secrets.RAILWAY_ENVIRONMENT }}
+        working-directory: frontend
+        run: npx railway@latest up . --ci --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_FRONTEND_SERVICE_ID" --environment "${RAILWAY_ENVIRONMENT:-production}"

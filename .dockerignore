@@ -1,0 +1,14 @@
+.git
+.github
+.wrangler
+__pycache__
+*.pyc
+*.log
+agent.db
+accuracy_report_*.json
+test_output*.json
+frontend/node_modules
+frontend/.next
+frontend/.git
+node_modules
+scratch

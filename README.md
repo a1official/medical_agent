@@ -46,6 +46,32 @@ Request path:
 - The agent gathers evidence and sends only supported context to NVIDIA.
 - The final response returns with source links for each answer.
 
+## Railway deployment
+
+This repo is now ready for Railway with two services:
+
+- Backend service: root `Dockerfile`
+- Frontend service: `frontend/Dockerfile`
+
+GitHub Actions:
+
+- `.github/workflows/ci.yml` runs Python and Next.js checks on every push and pull request.
+- `.github/workflows/deploy-railway.yml` deploys both services to Railway when the required secrets are present.
+
+Required GitHub secrets:
+
+- `RAILWAY_TOKEN`
+- `RAILWAY_PROJECT_ID`
+- `RAILWAY_BACKEND_SERVICE_ID`
+- `RAILWAY_FRONTEND_SERVICE_ID`
+- `RAILWAY_ENVIRONMENT` optional, defaults to `production`
+
+Railway runtime notes:
+
+- The backend listens on `PORT` and defaults to `8000`.
+- The frontend listens on `PORT` and defaults to `3000`.
+- Set `NEXT_PUBLIC_API_BASE_URL` in the Railway frontend service to the backend URL.
+
 ## Environment variables
 
 - `NVIDIA_API_KEY`
@@ -72,6 +98,22 @@ npm run dev
 Open `http://127.0.0.1:3000`.
 
 If the frontend should point at a different backend URL, set `NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local`.
+
+## Cloud build flow
+
+```mermaid
+flowchart TD
+    G[GitHub push to main] --> C[CI workflow]
+    C --> B1[Backend checks<br/>py_compile]
+    C --> F1[Frontend checks<br/>Next build]
+    G --> D[Deploy workflow]
+    D --> RB[Railway backend service]
+    D --> RF[Railway frontend service]
+    RF --> U[Browser UI]
+    U --> RB
+    RB --> A[TrustedMedicalAgent]
+    A --> N[NVIDIA API]
+```
 
 ## Notes
 
