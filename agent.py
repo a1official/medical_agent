@@ -20,7 +20,7 @@ SOURCE_GROUPS = [
     {"id": "guidelines", "label": "Clinical guidelines", "description": "NICE, WHO, CDC, ACC, AHA, IDSA, ACOG, AAFP, AAD, ASCO, KDIGO, GINA", "domains": ["nice.org.uk", "who.int", "cdc.gov", "acc.org", "aha.org", "idsociety.org", "acog.org", "aafp.org", "aad.org", "asco.org", "kdigo.org", "ginasthma.org"]},
     {"id": "consumer", "label": "Patient information", "description": "MedlinePlus and consumer-facing health portals", "domains": ["medlineplus.gov"]},
     {"id": "research", "label": "Medical research", "description": "PubMed, PMC, and peer-reviewed literature", "domains": ["pubmed.ncbi.nlm.nih.gov"]},
-    {"id": "drugs", "label": "Drug databases", "description": "FDA, DailyMed, and pharmacological databases", "domains": ["dailymed.nlm.nih.gov"]}
+    {"id": "drugs", "label": "Drug databases", "description": "FDA, DailyMed, and pharmacological databases", "domains": ["dailymed.nlm.nih.gov", "fda.gov"]}
 ]
 
 @dataclass
@@ -42,7 +42,7 @@ def allowed_hosts() -> set[str]:
         "nice.org.uk", "who.int", "cdc.gov", "acc.org", "aha.org",
         "idsociety.org", "acog.org", "aafp.org", "aad.org", "asco.org",
         "kdigo.org", "ginasthma.org", "medlineplus.gov", "pubmed.ncbi.nlm.nih.gov",
-        "dailymed.nlm.nih.gov"
+        "dailymed.nlm.nih.gov", "fda.gov"
     }
 
 def html_to_text(html: str) -> str:
@@ -395,32 +395,142 @@ def search_nice(query: str) -> list[dict[str, Any]]:
     return results
 
 def search_medline(query: str) -> list[dict[str, str]]:
-    results = []
-    url = f"https://medlineplus.gov/search?proxystylesheet=medlineplus_frontend&output=xml_no_dtd&q={quote_plus(query)}"
+    results: list[dict[str, str]] = []
+    url = "https://wsearch.nlm.nih.gov/ws/query"
+    query_terms = [t for t in re.split(r"[^a-z0-9]+", query.lower()) if len(t) > 3]
     try:
-        response = requests.get(url, timeout=10, headers={"user-agent": DEFAULT_UA})
-        soup = BeautifulSoup(response.text, "html.parser")
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if "medlineplus.gov" in href and not any(x in href for x in ["/spanish/", "/news/", "/ency/"]):
-                results.append({"url": href, "title": a.get_text()})
-                if len(results) >= 5: break
+        response = requests.get(
+            url,
+            params={"db": "healthTopics", "term": query, "retmax": 5, "rettype": "brief"},
+            timeout=10,
+            headers={"user-agent": DEFAULT_UA},
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "xml")
+        for document in soup.find_all("document"):
+            href = document.get("url", "").strip()
+            if not href or "medlineplus.gov" not in href:
+                continue
+            title_node = document.find("content", attrs={"name": "title"})
+            snippet_node = document.find("content", attrs={"name": "snippet"}) or document.find("content", attrs={"name": "FullSummary"})
+            title = title_node.get_text(" ", strip=True) if title_node else href.rsplit("/", 1)[-1]
+            if title in {"Health Topics", "Drugs & Supplements", "Genetics", "Medical Tests"}:
+                continue
+            haystack = f"{title} {snippet_node.get_text(' ', strip=True) if snippet_node else ''} {href}".lower()
+            if query_terms and not any(term in haystack for term in query_terms):
+                continue
+            results.append({
+                "url": href,
+                "title": title,
+                "snippet": snippet_node.get_text(" ", strip=True) if snippet_node else "",
+            })
+            if len(results) >= 5:
+                break
     except Exception:
         pass
     return results
 
 def search_pubmed(query: str) -> list[dict[str, str]]:
-    results = []
-    url = f"https://pubmed.ncbi.nlm.nih.gov/?term={quote_plus(query)}&size=5"
+    results: list[dict[str, str]] = []
+    query_terms = [t for t in re.split(r"[^a-z0-9]+", query.lower()) if len(t) > 3]
     try:
-        response = requests.get(url, timeout=10, headers={"user-agent": DEFAULT_UA})
-        soup = BeautifulSoup(response.text, "html.parser")
-        for article in soup.find_all("a", class_="docsum-title", href=True):
-            href = urljoin("https://pubmed.ncbi.nlm.nih.gov", article["href"])
-            results.append({"url": href, "title": article.get_text(strip=True)})
-            if len(results) >= 5: break
+        search_response = requests.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            params={
+                "db": "pubmed",
+                "term": query,
+                "retmode": "json",
+                "retmax": 5,
+                "tool": "trusted-medical-search-agent",
+            },
+            timeout=10,
+            headers={"user-agent": DEFAULT_UA},
+        )
+        search_response.raise_for_status()
+        search_json = search_response.json()
+        ids = search_json.get("esearchresult", {}).get("idlist", [])
+        if not ids:
+            return results
+
+        summary_response = requests.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+            params={
+                "db": "pubmed",
+                "id": ",".join(ids),
+                "retmode": "json",
+                "tool": "trusted-medical-search-agent",
+            },
+            timeout=10,
+            headers={"user-agent": DEFAULT_UA},
+        )
+        summary_response.raise_for_status()
+        summary_json = summary_response.json().get("result", {})
+        for uid in ids:
+            item = summary_json.get(uid)
+            if not item:
+                continue
+            title = item.get("title", f"PubMed {uid}")
+            if query_terms and not any(term in title.lower() for term in query_terms):
+                continue
+            results.append(
+                {
+                    "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
+                    "title": title,
+                    "snippet": f"{title} [PubMed]{' (' + item.get('pubdate', '') + ')' if item.get('pubdate') else ''}",
+                }
+            )
+            if len(results) >= 5:
+                break
     except Exception:
         pass
+    return results
+
+def search_dailymed(query: str) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    q = query.lower()
+    known_drug_terms = [
+        "apixaban", "rivaroxaban", "warfarin", "dabigatran", "edoxaban", "metformin",
+        "insulin", "amoxicillin", "doxycycline", "clarithromycin", "azithromycin",
+        "cefdinir", "cephalexin", "ciprofloxacin", "levofloxacin", "amlodipine",
+        "ramipril", "losartan", "lisinopril", "atorvastatin", "rosuvastatin",
+        "simvastatin", "furosemide", "spironolactone", "empagliflozin", "dapagliflozin",
+        "canagliflozin", "sitagliptin", "semaglutide", "omeprazole", "pantoprazole",
+        "prednisone", "albuterol", "salbutamol", "budesonide", "fluticasone",
+    ]
+    candidates = [term for term in known_drug_terms if term in q]
+    if not candidates:
+        tokens = [t for t in re.split(r"[^a-z0-9]+", q) if len(t) > 3]
+        candidates = tokens[:2]
+
+    seen: set[str] = set()
+    for candidate in candidates[:3]:
+        try:
+            response = requests.get(
+                f"https://dailymed.nlm.nih.gov/dailymed/services/v1/drugname/{quote_plus(candidate)}/human/spls.xml",
+                timeout=10,
+                headers={"user-agent": DEFAULT_UA},
+            )
+            if response.status_code != 200 or not response.text.strip():
+                continue
+            soup = BeautifulSoup(response.text, "xml")
+            for spl in soup.find_all("spl"):
+                setid_node = spl.find("setid")
+                title_node = spl.find("title")
+                setid = setid_node.get_text(" ", strip=True) if setid_node else ""
+                title = title_node.get_text(" ", strip=True) if title_node else ""
+                if not setid or not title:
+                    continue
+                if candidate not in title.lower() and candidate not in setid.lower():
+                    continue
+                url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={setid}"
+                if url in seen:
+                    continue
+                seen.add(url)
+                results.append({"url": url, "title": title, "snippet": title})
+                if len(results) >= 5:
+                    return results
+        except Exception:
+            continue
     return results
 
 def search_generic_site(domain: str, query: str) -> list[dict[str, str]]:
@@ -480,14 +590,62 @@ class TrustedMedicalAgent:
 
     def _route(self, query: str) -> list[dict]:
         q = query.lower()
-        selected = [SOURCE_GROUPS[0]]
-        if any(w in q for w in ["drug", "dose", "tablet", "pill", "side effect", "metformin", "statin", "pharmacological", "treatment"]):
-            selected.append(SOURCE_GROUPS[3])
-        if any(w in q for w in ["what is", "symptoms", "overview", "patient", "how to", "risk"]):
-            selected.append(SOURCE_GROUPS[1])
-        if any(w in q for w in ["trial", "study", "evidence", "research", "pubmed", "efficacy", "safety"]):
-            selected.append(SOURCE_GROUPS[2])
-        return selected
+        scores = {
+            "guidelines": 0,
+            "consumer": 0,
+            "research": 0,
+            "drugs": 0,
+        }
+
+        guideline_terms = [
+            "guideline", "recommend", "recommendation", "first-line", "first line",
+            "management", "treatment", "therapy", "protocol", "pathway", "algorithm",
+        ]
+        drug_terms = [
+            "drug", "dose", "dosing", "dose of", "tablet", "pill", "capsule",
+            "side effect", "adverse", "contraindication", "interaction", "metformin",
+            "statin", "apixaban", "rivaroxaban", "warfarin", "amoxicillin", "doxycycline",
+            "clarithromycin", "insulin", "ramipril", "losartan", "amlodipine",
+        ]
+        consumer_terms = [
+            "what is", "symptom", "symptoms", "overview", "patient", "how to",
+            "what causes", "causes", "risk", "signs", "learn", "living with",
+        ]
+        research_terms = [
+            "trial", "study", "studies", "research", "evidence", "pubmed", "meta-analysis",
+            "systematic review", "randomized", "randomised", "efficacy", "safety", "outcomes",
+        ]
+
+        def boost(group_id: str, terms: list[str], amount: int) -> None:
+            if any(term in q for term in terms):
+                scores[group_id] += amount
+
+        boost("guidelines", guideline_terms, 3)
+        boost("drugs", drug_terms, 4)
+        boost("consumer", consumer_terms, 4)
+        boost("research", research_terms, 4)
+
+        # Medical questions that ask "what should I use" usually need guidelines and drugs.
+        if any(term in q for term in ["first-line", "treatment", "therapy", "management", "dose", "drug"]):
+            scores["guidelines"] += 2
+            scores["drugs"] += 2
+
+        # Research questions often still benefit from guidelines as a baseline.
+        if any(term in q for term in ["trial", "study", "evidence", "research", "meta-analysis"]):
+            scores["research"] += 2
+            scores["guidelines"] += 1
+
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        selected = [next(group for group in SOURCE_GROUPS if group["id"] == group_id) for group_id, score in ranked if score > 0]
+
+        if not selected:
+            return [SOURCE_GROUPS[0]]
+
+        # Keep the routing focused. Guidelines stay as a baseline, but only when it is relevant.
+        if SOURCE_GROUPS[0] not in selected and ranked[0][0] != "consumer":
+            selected.insert(0, SOURCE_GROUPS[0])
+
+        return selected[:3]
 
     def _retrieve_evidence(self, query: str, route: list[dict], max_seconds: int = 45) -> list[EvidenceItem]:
         start = datetime.utcnow().timestamp()
@@ -495,42 +653,53 @@ class TrustedMedicalAgent:
         seen_snippets: set[str] = set()
         evidence: list[EvidenceItem] = []
         
-        all_results = []
+        grouped_results: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {group["id"]: [] for group in route}
         print(f"[Agent] Routing query to: {[g['id'] for g in route]}")
         for group in route:
             if group["id"] == "guidelines":
                 nice_res = search_nice(query)
                 print(f"[Agent] NICE search found {len(nice_res)} potential links")
-                for r in nice_res: all_results.append((r, group))
+                for r in nice_res: grouped_results[group["id"]].append((r, group))
                 for domain in ["who.int", "cdc.gov"]:
                     if domain in group["domains"]:
                         res = search_generic_site(domain, query)
                         print(f"[Agent] {domain} search found {len(res)} potential links")
-                        for r in res: all_results.append((r, group))
+                        for r in res: grouped_results[group["id"]].append((r, group))
             elif group["id"] == "consumer":
                 res = search_medline(query)
                 print(f"[Agent] MedlinePlus search found {len(res)} potential links")
-                for r in res: all_results.append((r, group))
+                for r in res: grouped_results[group["id"]].append((r, group))
             elif group["id"] == "research":
                 res = search_pubmed(query)
                 print(f"[Agent] PubMed search found {len(res)} potential links")
-                for r in res: all_results.append((r, group))
+                for r in res: grouped_results[group["id"]].append((r, group))
             elif group["id"] == "drugs":
-                for domain in ["fda.gov", "dailymed.nlm.nih.gov"]:
+                dailymed_res = search_dailymed(query)
+                print(f"[Agent] DailyMed API found {len(dailymed_res)} potential links")
+                for r in dailymed_res: grouped_results[group["id"]].append((r, group))
+                for domain in ["fda.gov"]:
                     if domain in group["domains"]:
                         res = search_generic_site(domain, query)
                         print(f"[Agent] {domain} search found {len(res)} potential links")
-                        for r in res: all_results.append((r, group))
+                        for r in res: grouped_results[group["id"]].append((r, group))
         
-        def result_priority(item: tuple[dict[str, Any], dict[dict, Any]]) -> int:
+        def result_priority(item: tuple[dict[str, Any], dict[str, Any]]) -> int:
             res, group = item
             url = res["url"].lower()
             title = res.get("title", "").lower()
             priority = res.get("rank_boost", 0)
             if group["id"] == "guidelines":
-                priority += 20
-                if "nice.org.uk" in url: priority += 30
-                if "who.int" in url or "cdc.gov" in url: priority += 15
+                priority += 10
+                if "nice.org.uk" in url: priority += 20
+                if "who.int" in url or "cdc.gov" in url: priority += 12
+            elif group["id"] == "drugs":
+                priority += 10
+                if "fda.gov" in url: priority += 18
+                if "dailymed.nlm.nih.gov" in url: priority += 15
+            elif group["id"] == "research":
+                priority += 12
+            elif group["id"] == "consumer":
+                priority += 8
             if any(kw in (url + title) for kw in ["pharmacological", "recommendation", "management", "treatment", "guideline"]):
                 priority += 15
             is_pregnancy_query = "pregnancy" in query.lower() or "pregnant" in query.lower()
@@ -545,10 +714,22 @@ class TrustedMedicalAgent:
             elif "atrial fibrillation" in q_lower and ("ng196" in url or "atrial fibrillation" in title.lower()): priority += 40
             return priority
 
-        all_results.sort(key=result_priority, reverse=True)
-        print(f"[Agent] Total potential results after sorting: {len(all_results)}")
+        group_limits = {
+            "guidelines": 2,
+            "consumer": 2,
+            "research": 2,
+            "drugs": 2,
+        }
+        ordered_results: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for group in route:
+            bucket = grouped_results.get(group["id"], [])
+            bucket.sort(key=result_priority, reverse=True)
+            ordered_results.extend(bucket[:group_limits.get(group["id"], 2)])
 
-        for result, group in all_results:
+        ordered_results.sort(key=result_priority, reverse=True)
+        print(f"[Agent] Total potential results after sorting: {len(ordered_results)}")
+
+        for result, group in ordered_results:
             if datetime.utcnow().timestamp() - start > max_seconds: 
                 print("[Agent] Retrieval timeout reached")
                 break
@@ -564,7 +745,8 @@ class TrustedMedicalAgent:
                 continue
             
             snippet = result.get("snippet") or summarize_for_evidence(page["text"], query)
-            if not snippet or len(snippet) < 100: 
+            min_snippet_length = 40 if group["id"] in {"research", "drugs"} else 100
+            if not snippet or len(snippet) < min_snippet_length: 
                 print(f"[Agent] No relevant content snippet found in {url}")
                 continue
             
