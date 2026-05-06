@@ -301,6 +301,60 @@ def search_nice(query: str) -> list[dict[str, Any]]:
     
     q_lower = query.lower()
 
+    preferred_curated_sources: list[tuple[str, str]] = []
+    if re.search(r"\b(hypertension|high blood pressure|blood pressure)\b", q_lower):
+        preferred_curated_sources = [
+            ("https://www.heart.org/en/health-topics/high-blood-pressure", "AHA High Blood Pressure"),
+            ("https://www.heart.org/en/health-topics/high-blood-pressure/understanding-blood-pressure-readings", "AHA Blood Pressure Readings"),
+            ("https://www.heart.org/en/health-topics/high-blood-pressure/changes-you-can-make-to-manage-high-blood-pressure", "AHA Blood Pressure Management"),
+            ("https://www.acc.org/Guidelines", "ACC Guidelines (Hypertension)"),
+        ]
+    elif re.search(r"\b(asthma|wheeze|wheezing|inhaler|bronchospasm)\b", q_lower):
+        preferred_curated_sources = [
+            ("https://ginasthma.org/", "GINA Global Asthma Network"),
+            ("https://ginasthma.org/gina-reports/", "GINA Reports"),
+        ]
+    elif re.search(r"\b(heart failure|hfref|hfpef)\b", q_lower):
+        preferred_curated_sources = [
+            ("https://www.heart.org/en/health-topics/heart-failure", "AHA Heart Failure"),
+            ("https://www.heart.org/en/health-topics/heart-failure/what-is-heart-failure", "AHA What Is Heart Failure"),
+            ("https://www.heart.org/en/health-topics/heart-failure/managing-heart-failure", "AHA Managing Heart Failure"),
+            ("https://www.acc.org/Guidelines", "ACC Guidelines (Heart Failure)"),
+        ]
+    elif re.search(r"\b(atrial fibrillation|afib|af|anticoagulation|chads|doac)\b", q_lower):
+        preferred_curated_sources = [
+            ("https://www.heart.org/en/health-topics/atrial-fibrillation", "AHA Atrial Fibrillation"),
+            ("https://www.heart.org/en/health-topics/atrial-fibrillation/what-is-atrial-fibrillation-afib", "AHA What Is Atrial Fibrillation"),
+            ("https://www.acc.org/Guidelines", "ACC Guidelines (Atrial Fibrillation)"),
+        ]
+    elif re.search(r"\b(pneumonia|pneumococcal|community acquired pneumonia|cap)\b", q_lower):
+        preferred_curated_sources = [
+            ("https://www.cdc.gov/pneumonia/index.html", "CDC Pneumonia"),
+            ("https://www.cdc.gov/pneumonia/prevention/index.html", "CDC Pneumonia Prevention"),
+            ("https://www.who.int/news-room/fact-sheets/detail/pneumonia", "WHO Pneumonia Fact Sheet"),
+        ]
+    elif re.search(r"\b(diabetes|metformin|sglt2|insulin|prediabetes|type 2 diabetes)\b", q_lower):
+        preferred_curated_sources = [
+            ("https://www.cdc.gov/diabetes/index.html", "CDC Diabetes"),
+            ("https://www.cdc.gov/diabetes/about/index.html", "CDC About Diabetes"),
+            ("https://www.who.int/news-room/fact-sheets/detail/diabetes", "WHO Diabetes Fact Sheet"),
+        ]
+
+    if preferred_curated_sources:
+        for url, title in preferred_curated_sources:
+            if url not in seen:
+                seen.add(url)
+                results.append({"url": url, "title": title, "rank_boost": 120})
+        if re.search(r"\b(diabetes)\b", q_lower):
+            for url, title in [
+                ("https://www.nice.org.uk/guidance/ng28/chapter/recommendations", "NICE Diabetes Recommendations"),
+                ("https://www.nice.org.uk/guidance/ng28/chapter/recommendations#drug-treatment", "NICE Diabetes Drug Treatment"),
+            ]:
+                if url not in seen:
+                    seen.add(url)
+                    results.append({"url": url, "title": title, "rank_boost": 35})
+        return results
+
     # Acute coronary syndrome and heart attack queries should prefer ACC/AHA and AHA pages
     # rather than the generic NICE search results, which can dominate the answer.
     if re.search(r"\b(heart attack|acute coronary syndrome|acs|stemi|nstemi|myocardial infarction|unstable angina)\b", q_lower):
@@ -670,6 +724,25 @@ class TrustedMedicalAgent:
             # pull the drug database ahead of cardiology guidance and patient-facing pages.
             scores["drugs"] -= 5
 
+        if any(term in q for term in ["hypertension", "high blood pressure", "blood pressure"]):
+            scores["consumer"] += 3
+            scores["guidelines"] += 5
+        if any(term in q for term in ["asthma", "wheeze", "wheezing", "inhaler"]):
+            scores["consumer"] += 3
+            scores["guidelines"] += 5
+        if any(term in q for term in ["heart failure", "hfref", "hfpef"]):
+            scores["consumer"] += 3
+            scores["guidelines"] += 5
+        if any(term in q for term in ["atrial fibrillation", "afib", "af", "anticoagulation", "chads"]):
+            scores["consumer"] += 3
+            scores["guidelines"] += 5
+        if any(term in q for term in ["pneumonia", "pneumococcal", "community acquired pneumonia", "cap"]):
+            scores["consumer"] += 3
+            scores["guidelines"] += 4
+        if any(term in q for term in ["diabetes", "metformin", "sglt2", "insulin", "prediabetes", "type 2 diabetes"]):
+            scores["consumer"] += 3
+            scores["guidelines"] += 4
+
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         selected = [next(group for group in SOURCE_GROUPS if group["id"] == group_id) for group_id, score in ranked if score > 0]
 
@@ -724,6 +797,12 @@ class TrustedMedicalAgent:
             title = res.get("title", "").lower()
             q_lower = query.lower()
             priority = res.get("rank_boost", 0)
+            is_hypertension = any(term in q_lower for term in ["hypertension", "high blood pressure", "blood pressure"])
+            is_asthma = any(term in q_lower for term in ["asthma", "wheeze", "wheezing", "inhaler"])
+            is_heart_failure = any(term in q_lower for term in ["heart failure", "hfref", "hfpef"])
+            is_af = any(term in q_lower for term in ["atrial fibrillation", "afib", "af", "anticoagulation", "chads"])
+            is_pneumonia = any(term in q_lower for term in ["pneumonia", "pneumococcal", "community acquired pneumonia", "cap"])
+            is_diabetes = any(term in q_lower for term in ["diabetes", "metformin", "sglt2", "insulin", "prediabetes", "type 2 diabetes"])
             if group["id"] == "guidelines":
                 priority += 10
                 if "heart attack" in q_lower or "myocardial infarction" in q_lower or "acs" in q_lower:
@@ -731,8 +810,52 @@ class TrustedMedicalAgent:
                         priority += 35
                     elif "nice.org.uk" in url:
                         priority -= 120
-                if "nice.org.uk" in url: priority += 20
-                if "who.int" in url or "cdc.gov" in url: priority += 12
+                if is_hypertension:
+                    if "heart.org" in url:
+                        priority += 45
+                    elif "acc.org" in url:
+                        priority += 35
+                    elif "nice.org.uk" in url:
+                        priority -= 90
+                if is_asthma:
+                    if "ginasthma.org" in url:
+                        priority += 55
+                    elif "nice.org.uk" in url:
+                        priority -= 80
+                if is_heart_failure:
+                    if "heart.org" in url:
+                        priority += 45
+                    elif "acc.org" in url:
+                        priority += 35
+                    elif "nice.org.uk" in url:
+                        priority -= 90
+                if is_af:
+                    if "heart.org" in url:
+                        priority += 45
+                    elif "acc.org" in url:
+                        priority += 35
+                    elif "nice.org.uk" in url:
+                        priority -= 90
+                if is_pneumonia:
+                    if "cdc.gov" in url:
+                        priority += 40
+                    elif "who.int" in url:
+                        priority += 24
+                    elif "idsociety.org" in url:
+                        priority += 30
+                    elif "nice.org.uk" in url:
+                        priority -= 70
+                if is_diabetes:
+                    if "cdc.gov" in url:
+                        priority += 28
+                    elif "who.int" in url:
+                        priority += 24
+                    elif "nice.org.uk" in url:
+                        priority -= 15
+                if "nice.org.uk" in url and not (is_hypertension or is_asthma or is_heart_failure or is_af or is_pneumonia or is_diabetes):
+                    priority += 20
+                if "who.int" in url or "cdc.gov" in url:
+                    priority += 12
             elif group["id"] == "drugs":
                 priority += 10
                 if "fda.gov" in url: priority += 18
