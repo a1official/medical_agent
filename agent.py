@@ -300,6 +300,22 @@ def search_nice(query: str) -> list[dict[str, Any]]:
     seen: set[str] = set()
     
     q_lower = query.lower()
+
+    # Acute coronary syndrome and heart attack queries should prefer ACC/AHA and AHA pages
+    # rather than the generic NICE search results, which can dominate the answer.
+    if re.search(r"\b(heart attack|acute coronary syndrome|acs|stemi|nstemi|myocardial infarction|unstable angina)\b", q_lower):
+        curated = [
+            ("https://www.acc.org/Guidelines", "ACC Guidelines (Acute Coronary Syndromes)"),
+            ("https://www.acc.org/About-ACC/Press-Releases/2025/02/28/17/51/ACC-AHA-Issue-New-Acute-Coronary-Syndromes-Guideline", "ACC/AHA Acute Coronary Syndromes Guideline"),
+            ("https://www.heart.org/en/health-topics/heart-attack/diagnosing-a-heart-attack", "AHA Diagnosing a Heart Attack"),
+            ("https://www.heart.org/en/health-topics/heart-attack", "AHA Heart Attack Overview"),
+        ]
+        for url, title in curated:
+            if url not in seen:
+                seen.add(url)
+                results.append({"url": url, "title": title, "rank_boost": 120})
+        return results
+
     # High-priority direct guideline mapping
     direct_mapping = [
         # Hypertension
@@ -336,9 +352,11 @@ def search_nice(query: str) -> list[dict[str, Any]]:
             ("https://www.nice.org.uk/guidance/ng250/chapter/recommendations", "NG250 Recommendations (Pneumonia)")
         ]),
         # Acute Coronary Syndromes
-        (re.compile(r"acs|stemi|nstemi|myocardial infarction|unstable angina"), [
-            ("https://www.nice.org.uk/guidance/ng185/chapter/recommendations#drug-therapy-to-prevent-further-cardiovascular-events", "NG185 Drug Therapy (ACS)"),
-            ("https://www.nice.org.uk/guidance/ng185/chapter/recommendations", "NG185 Recommendations (ACS)")
+        (re.compile(r"acs|stemi|nstemi|myocardial infarction|unstable angina|heart attack|acute coronary syndrome"), [
+            ("https://www.acc.org/Guidelines", "ACC Guidelines (Acute Coronary Syndromes)"),
+            ("https://www.acc.org/About-ACC/Press-Releases/2025/02/28/17/51/ACC-AHA-Issue-New-Acute-Coronary-Syndromes-Guideline", "ACC/AHA Acute Coronary Syndromes Guideline"),
+            ("https://www.heart.org/en/health-topics/heart-attack/diagnosing-a-heart-attack", "AHA Diagnosing a Heart Attack"),
+            ("https://www.heart.org/en/health-topics/heart-attack", "AHA Heart Attack Overview")
         ]),
         # Migraine
         (re.compile(r"migraine|triptan"), [
@@ -397,11 +415,16 @@ def search_nice(query: str) -> list[dict[str, Any]]:
 def search_medline(query: str) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
     url = "https://wsearch.nlm.nih.gov/ws/query"
-    query_terms = [t for t in re.split(r"[^a-z0-9]+", query.lower()) if len(t) > 3]
+    q_lower = query.lower()
+    medline_query = query
+    if re.search(r"\b(heart attack|acute coronary syndrome|acs|stemi|nstemi|myocardial infarction|unstable angina)\b", q_lower):
+        # Ask MedlinePlus for the cardiology concept, not the generic "treatment" term.
+        medline_query = "heart attack coronary artery disease acute coronary syndrome"
+    query_terms = [t for t in re.split(r"[^a-z0-9]+", medline_query.lower()) if len(t) > 3]
     try:
         response = requests.get(
             url,
-            params={"db": "healthTopics", "term": query, "retmax": 5, "rettype": "brief"},
+            params={"db": "healthTopics", "term": medline_query, "retmax": 5, "rettype": "brief"},
             timeout=10,
             headers={"user-agent": DEFAULT_UA},
         )
@@ -635,6 +658,18 @@ class TrustedMedicalAgent:
             scores["research"] += 2
             scores["guidelines"] += 1
 
+        acs_terms = [
+            "heart attack", "acute coronary syndrome", "acs", "stemi", "nstemi",
+            "myocardial infarction", "unstable angina",
+        ]
+        if any(term in q for term in acs_terms):
+            scores["guidelines"] += 6
+            scores["consumer"] += 4
+            scores["research"] += 3
+            # ACS questions often mention "treatment", but that should not automatically
+            # pull the drug database ahead of cardiology guidance and patient-facing pages.
+            scores["drugs"] -= 5
+
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         selected = [next(group for group in SOURCE_GROUPS if group["id"] == group_id) for group_id, score in ranked if score > 0]
 
@@ -687,9 +722,15 @@ class TrustedMedicalAgent:
             res, group = item
             url = res["url"].lower()
             title = res.get("title", "").lower()
+            q_lower = query.lower()
             priority = res.get("rank_boost", 0)
             if group["id"] == "guidelines":
                 priority += 10
+                if "heart attack" in q_lower or "myocardial infarction" in q_lower or "acs" in q_lower:
+                    if "acc.org" in url or "heart.org" in url:
+                        priority += 35
+                    elif "nice.org.uk" in url:
+                        priority -= 120
                 if "nice.org.uk" in url: priority += 20
                 if "who.int" in url or "cdc.gov" in url: priority += 12
             elif group["id"] == "drugs":
@@ -706,7 +747,6 @@ class TrustedMedicalAgent:
             if "pregnancy" in (url + title) and not is_pregnancy_query: priority -= 40
             is_child_query = "child" in query.lower() or "young" in query.lower() or "pediatric" in query.lower()
             if ("child" in (url + title) or "young people" in (url + title)) and not is_child_query: priority -= 30
-            q_lower = query.lower()
             if "hypertension" in q_lower and ("ng136" in url or "hypertension" in title.lower()): priority += 40
             elif "diabetes" in q_lower and ("ng28" in url or "diabetes" in title.lower()): priority += 40
             elif "pneumonia" in q_lower and ("ng250" in url or "pneumonia" in title.lower()): priority += 40
